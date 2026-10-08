@@ -80,6 +80,8 @@ import {
     SUPPORTED_MODERN_PROTOCOL_VERSIONS
 } from '@modelcontextprotocol/core-internal';
 
+import type { ClientExtension } from './extension';
+import { installClientExtensions } from './extension';
 import type { PriorDiscovery } from './probeClassifier';
 import type { CacheMode, CacheScope, ResponseCacheStore } from './responseCache';
 import { ClientResponseCache, InMemoryResponseCacheStore, MAX_CACHE_TTL_MS } from './responseCache';
@@ -181,6 +183,18 @@ export function getSupportedElicitationModes(capabilities: ClientCapabilities['e
 }
 
 export type ClientOptions = ProtocolOptions & {
+    /**
+     * Extensions to set up at construction, in order. Each is advertised under
+     * `capabilities.extensions[id]` as `{}`, then its `setup` runs with a
+     * `ClientExtensionContext`. A duplicate id fails construction before any
+     * extension is set up.
+     *
+     * Experimental: the shape of an extension may change in a minor release.
+     *
+     * @experimental
+     */
+    extensions?: readonly ClientExtension[];
+
     /**
      * Capabilities to advertise as being supported by this client.
      */
@@ -547,6 +561,8 @@ export class Client extends Protocol<ClientContext> {
     private _serverCapabilities?: ServerCapabilities;
     private _serverVersion?: Implementation;
     private _capabilities: ClientCapabilities;
+    /** Throws when an installed extension depends on something this client lacks; run by `connect`. */
+    private readonly _checkExtensionRequirements: (capabilities: ClientCapabilities) => void;
     private _instructions?: string;
     private _jsonSchemaValidator: jsonSchemaValidator;
     /**
@@ -680,6 +696,8 @@ export class Client extends Protocol<ClientContext> {
         if (options?.listChanged) {
             this._listChangedConfig = options.listChanged;
         }
+
+        this._checkExtensionRequirements = installClientExtensions(this, options?.extensions ?? []);
     }
 
     protected override buildContext(ctx: BaseContext, _transportInfo?: MessageExtraInfo): ClientContext {
@@ -1002,6 +1020,8 @@ export class Client extends Protocol<ClientContext> {
      * ```
      */
     override async connect(transport: Transport, options?: ConnectOptions): Promise<void> {
+        // An extension that depends on a capability or another extension this client lacks fails here, before connecting.
+        this._checkExtensionRequirements(this._capabilities);
         // `!= null`: a persisted prior slot naturally revives as JSON `null`
         // — treat it like an absent option, not a shape error.
         if (options?.prior != null) {
